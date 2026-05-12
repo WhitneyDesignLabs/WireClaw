@@ -12,6 +12,38 @@ static const char *DEFAULT_HOST = "openrouter.ai";
 static const int   DEFAULT_PORT = 443;
 static const char *DEFAULT_PATH = "/api/v1/chat/completions";
 
+/* Detect when LLM has emitted tool-call intent as prose instead of populating
+ * the structured tool_calls field. High-signal markers only -- no regex.
+ * Designed for ESP32 footprint: ~200 bytes flash, microseconds of runtime. */
+static bool content_has_prose_tool_call(const char *content, int len) {
+    if (!content || len <= 0) return false;
+
+    /* XML markers used by Qwen-Instruct, Hermes, Anthropic-style fine-tunes */
+    static const char *xml_markers[] = {
+        "<tool_call>",
+        "<function_calls>",
+        "<invoke ",
+        "<tool_use>",
+    };
+    for (size_t i = 0; i < sizeof(xml_markers)/sizeof(xml_markers[0]); i++) {
+        const char *m = xml_markers[i];
+        if (memmem(content, len, m, strlen(m))) return true;
+    }
+
+    /* Fenced JSON block followed by tool-call-shaped keys within 200 bytes */
+    const char *fence = (const char *)memmem(content, len, "```json", 7);
+    if (fence) {
+        int remaining = len - (fence - content);
+        int scan = remaining > 200 ? 200 : remaining;
+        if (memmem(fence, scan, "\"name\"", 6) ||
+            memmem(fence, scan, "\"function\"", 10) ||
+            memmem(fence, scan, "\"arguments\"", 11)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* ---- JSON helpers ---- */
 
 static int json_escape(char *dst, int dst_len, const char *src) {
@@ -419,6 +451,7 @@ int LlmClient::parseToolCalls(const char *body, int body_len, LlmResult *result)
 
 bool LlmClient::parseResponse(const char *body, int body_len, LlmResult *result) {
     result->ok = false;
+    result->prose_leak_detected = false;
     result->content[0] = '\0';
     result->content_len = 0;
     result->prompt_tokens = 0;
@@ -437,6 +470,21 @@ bool LlmClient::parseResponse(const char *body, int body_len, LlmResult *result)
         memcpy(result->content, content, copy_len);
         result->content[copy_len] = '\0';
         result->content_len = json_unescape(result->content, copy_len);
+    }
+
+    /* Detect prose-leaked tool calls: model emitted tool intent in content
+     * but no structured tool_calls. Saving this to history reinforces the
+     * behavior, so flag it and let the caller decide how to surface. */
+    if (tc_count == 0 && result->content_len > 0) {
+        if (content_has_prose_tool_call(result->content, result->content_len)) {
+            result->prose_leak_detected = true;
+            Serial.println("[LLM] WARNING: prose tool-call leak detected; not saving to history");
+            if (g_debug) {
+                int snip = result->content_len > 200 ? 200 : result->content_len;
+                Serial.printf("[LLM]   leaked content (%d bytes): %.*s...\n",
+                              result->content_len, snip, result->content);
+            }
+        }
     }
 
     /* If we got tool calls, that's a success even without content */
@@ -525,6 +573,7 @@ int LlmClient::readResponse(char *buf, int buf_len) {
 bool LlmClient::chat(const LlmMessage *messages, int count,
                        const char *tools_json, LlmResult *result) {
     result->ok = false;
+    result->prose_leak_detected = false;
     result->content[0] = '\0';
     result->content_len = 0;
     result->http_status = 0;
