@@ -47,6 +47,12 @@ struct LlmMessage {
 /* Result of an LLM call */
 struct LlmResult {
     bool ok;
+    /* True if model emitted tool-call intent as prose/markdown/XML instead of
+     * populating the structured tool_calls field. When true, the content
+     * should NOT be saved to conversation history -- doing so reinforces the
+     * behavior on subsequent turns. The caller should surface an error and
+     * either retry with a corrective system message or fail gracefully. */
+    bool prose_leak_detected;
     char content[LLM_MAX_RESPONSE_LEN];
     int  content_len;
     int  http_status;
