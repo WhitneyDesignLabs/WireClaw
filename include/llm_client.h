@@ -65,7 +65,11 @@ class LlmClient {
 public:
     LlmClient();
 
-    void begin(const char *api_key, const char *model, const char *base_url = nullptr);
+    void begin(const char *api_key, const char *model, const char *base_url = nullptr,
+               int max_tokens = 2048, float temperature = 0.7f);
+
+    void setMaxTokens(int max_tokens) { m_max_tokens = max_tokens; }
+    void setTemperature(float t)      { m_temperature = t; }
 
     /**
      * Send a chat completion request, optionally with tools.
@@ -92,6 +96,8 @@ private:
     char m_path[64];
     bool m_use_tls;
     char m_error[128];
+    int   m_max_tokens;
+    float m_temperature;
 
     int buildRequest(char *buf, int buf_len,
                      const LlmMessage *messages, int count,

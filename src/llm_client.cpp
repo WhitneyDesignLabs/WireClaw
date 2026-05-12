@@ -163,15 +163,18 @@ static const char *json_skip_value(const char *p, const char *end) {
 
 LlmClient::LlmClient()
     : m_client(nullptr), m_api_key(nullptr), m_model(nullptr),
-      m_port(443), m_use_tls(true) {
+      m_port(443), m_use_tls(true), m_max_tokens(2048), m_temperature(0.7f) {
     m_error[0] = '\0';
     m_host[0] = '\0';
     m_path[0] = '\0';
 }
 
-void LlmClient::begin(const char *api_key, const char *model, const char *base_url) {
+void LlmClient::begin(const char *api_key, const char *model, const char *base_url,
+                      int max_tokens, float temperature) {
     m_api_key = api_key;
     m_model = model;
+    m_max_tokens  = (max_tokens  > 0) ? max_tokens  : 2048;
+    m_temperature = (temperature > 0.0f && temperature <= 2.0f) ? temperature : 0.7f;
 
     /* Parse base_url or use defaults */
     if (base_url && base_url[0]) {
@@ -317,7 +320,8 @@ int LlmClient::buildRequest(char *buf, int buf_len,
     }
 
     w += snprintf(buf + w, buf_len - w,
-        ",\"max_tokens\":2048,\"temperature\":0.7}");
+        ",\"max_tokens\":%d,\"temperature\":%.2f}",
+        m_max_tokens, m_temperature);
 
     if (w >= buf_len) return -1;
     return w;

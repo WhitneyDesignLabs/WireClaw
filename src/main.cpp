@@ -48,6 +48,8 @@ char cfg_telegram_chat_id[16];
 char cfg_system_prompt[4096];
 char cfg_timezone[64];
 int cfg_telegram_cooldown = 3;  /* seconds, 0 = disabled */
+int   cfg_max_tokens  = 2048;
+float cfg_temperature = 0.7f;
 
 /* Placeholder defaults - overridden by LittleFS config.json */
 static void configDefaults() {
@@ -62,6 +64,8 @@ static void configDefaults() {
     cfg_telegram_token[0] = '\0';
     cfg_telegram_chat_id[0] = '\0';
     strncpy(cfg_timezone, "UTC0", sizeof(cfg_timezone));
+    cfg_max_tokens  = 2048;
+    cfg_temperature = 0.7f;
     strncpy(cfg_system_prompt,
         "You are WireClaw, a helpful AI assistant running on an ESP32 microcontroller. "
         "Be concise. Keep responses under 200 words unless asked for detail.",
@@ -180,6 +184,13 @@ static bool loadConfig() {
             cfg_telegram_cooldown = atoi(cd_buf);
         }
         jsonGetString(json_buf, "timezone", cfg_timezone, sizeof(cfg_timezone));
+        char num_buf[16];
+        if (jsonGetString(json_buf, "max_tokens", num_buf, sizeof(num_buf))) {
+            cfg_max_tokens = atoi(num_buf);
+        }
+        if (jsonGetString(json_buf, "temperature", num_buf, sizeof(num_buf))) {
+            cfg_temperature = (float)atof(num_buf);
+        }
     } else {
         Serial.printf("LittleFS: no config.json, using defaults\n");
     }
@@ -1654,7 +1665,8 @@ void setup() {
     Serial.printf("NTP: syncing (TZ=%s)...\n", cfg_timezone);
 
     /* Init LLM client */
-    llm.begin(cfg_api_key, cfg_model, cfg_api_base_url);
+    llm.begin(cfg_api_key, cfg_model, cfg_api_base_url,
+              cfg_max_tokens, cfg_temperature);
 
     /* Watchdog - reconfigure to 60s (Arduino already inits WDT at 5s) */
     esp_task_wdt_config_t wdt_cfg = { .timeout_ms = 60000, .idle_core_mask = 0,
