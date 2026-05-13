@@ -479,6 +479,16 @@ const char *chatWithLLM(const char *userMessage) {
         totalPromptTokens += result.prompt_tokens;
         totalCompletionTokens += result.completion_tokens;
 
+        /* If the model prose-leaked a tool call, do NOT save to history -- that
+         * would teach it the leak is normal. Surface a corrective error and stop. */
+        if (result.prose_leak_detected) {
+            static const char *leak_msg =
+                "Sorry, the model responded incorrectly. Please rephrase the request.";
+            finalContent = leak_msg;
+            Serial.println("[Agent] Prose leak surfaced as user-visible error");
+            break;
+        }
+
         /* No tool calls - we're done */
         if (result.tool_call_count == 0) {
             finalContent = result.content;
@@ -525,6 +535,13 @@ const char *chatWithLLM(const char *userMessage) {
         Serial.printf("\n%s\n", finalContent);
         Serial.printf("--- (%lums, %d+%d tokens) ---\n\n",
                       elapsed, totalPromptTokens, totalCompletionTokens);
+
+        /* On prose leak, surface the corrective message but skip history -- saving
+         * the leak (or its replacement) would teach the model the wrong pattern. */
+        if (result.prose_leak_detected) {
+            chatActive = false;
+            return finalContent;
+        }
 
         /* Save to history (circular buffer) */
         int slot;
@@ -1627,6 +1644,9 @@ void setup() {
     Serial.printf("========================================\n");
     Serial.printf("  WireClaw v%s\n", WIRECLAW_VERSION);
     Serial.printf("========================================\n\n");
+
+    /* P01-v2 detector self-test (boot-time, runs once, ~ms) */
+    llmSelfTestProseLeak();
 
     /* Load config from LittleFS */
     loadConfig();
