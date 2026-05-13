@@ -337,8 +337,11 @@ int LlmClient::buildRequest(char *buf, int buf_len,
         "{\"model\":\"%s\",\"messages\":[", m_model);
     if (w >= buf_len) return -1;
 
+    int emitted = 0;
     for (int i = 0; i < count; i++) {
-        if (i > 0) {
+        if (m_skipSystemMessages && messages[i].role &&
+            strcmp(messages[i].role, "system") == 0) continue;
+        if (emitted > 0) {
             if (w + 1 >= buf_len) return -1;
             buf[w++] = ',';
         }
@@ -397,6 +400,7 @@ int LlmClient::buildRequest(char *buf, int buf_len,
         }
 
         if (w >= buf_len) return -1;
+        emitted++;
     }
 
     w += snprintf(buf + w, buf_len - w, "]");

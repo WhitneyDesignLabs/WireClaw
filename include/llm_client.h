@@ -77,6 +77,9 @@ public:
     void setMaxTokens(int max_tokens) { m_max_tokens = max_tokens; }
     void setTemperature(float t)      { m_temperature = t; }
 
+    /* Skip role:"system" messages on the wire. For baked-in Modelfile SYSTEM. */
+    void setSkipSystemMessages(bool skip) { m_skipSystemMessages = skip; }
+
     /**
      * Send a chat completion request, optionally with tools.
      *
@@ -104,6 +107,7 @@ private:
     char m_error[128];
     int   m_max_tokens;
     float m_temperature;
+    bool  m_skipSystemMessages = false;
 
     int buildRequest(char *buf, int buf_len,
                      const LlmMessage *messages, int count,

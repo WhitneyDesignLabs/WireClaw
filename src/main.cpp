@@ -50,6 +50,7 @@ char cfg_timezone[64];
 int cfg_telegram_cooldown = 3;  /* seconds, 0 = disabled */
 int   cfg_max_tokens  = 2048;
 float cfg_temperature = 0.7f;
+bool  cfg_use_modelfile_system = false;
 
 /* Placeholder defaults - overridden by LittleFS config.json */
 static void configDefaults() {
@@ -66,6 +67,7 @@ static void configDefaults() {
     strncpy(cfg_timezone, "UTC0", sizeof(cfg_timezone));
     cfg_max_tokens  = 2048;
     cfg_temperature = 0.7f;
+    cfg_use_modelfile_system = false;
     strncpy(cfg_system_prompt,
         "You are WireClaw, a helpful AI assistant running on an ESP32 microcontroller. "
         "Be concise. Keep responses under 200 words unless asked for detail.",
@@ -190,6 +192,10 @@ static bool loadConfig() {
         }
         if (jsonGetString(json_buf, "temperature", num_buf, sizeof(num_buf))) {
             cfg_temperature = (float)atof(num_buf);
+        }
+        char b_buf[8];
+        if (jsonGetString(json_buf, "use_modelfile_system", b_buf, sizeof(b_buf))) {
+            cfg_use_modelfile_system = (strcmp(b_buf, "true") == 0 || strcmp(b_buf, "1") == 0);
         }
     } else {
         Serial.printf("LittleFS: no config.json, using defaults\n");
@@ -1687,6 +1693,7 @@ void setup() {
     /* Init LLM client */
     llm.begin(cfg_api_key, cfg_model, cfg_api_base_url,
               cfg_max_tokens, cfg_temperature);
+    llm.setSkipSystemMessages(cfg_use_modelfile_system);
 
     /* Watchdog - reconfigure to 60s (Arduino already inits WDT at 5s) */
     esp_task_wdt_config_t wdt_cfg = { .timeout_ms = 60000, .idle_core_mask = 0,
