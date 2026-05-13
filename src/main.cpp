@@ -48,6 +48,7 @@ char cfg_telegram_chat_id[16];
 char cfg_system_prompt[4096];
 char cfg_timezone[64];
 int cfg_telegram_cooldown = 3;  /* seconds, 0 = disabled */
+bool cfg_use_modelfile_system = false;
 
 /* Placeholder defaults - overridden by LittleFS config.json */
 static void configDefaults() {
@@ -62,6 +63,7 @@ static void configDefaults() {
     cfg_telegram_token[0] = '\0';
     cfg_telegram_chat_id[0] = '\0';
     strncpy(cfg_timezone, "UTC0", sizeof(cfg_timezone));
+    cfg_use_modelfile_system = false;
     strncpy(cfg_system_prompt,
         "You are WireClaw, a helpful AI assistant running on an ESP32 microcontroller. "
         "Be concise. Keep responses under 200 words unless asked for detail.",
@@ -180,6 +182,10 @@ static bool loadConfig() {
             cfg_telegram_cooldown = atoi(cd_buf);
         }
         jsonGetString(json_buf, "timezone", cfg_timezone, sizeof(cfg_timezone));
+        char b_buf[8];
+        if (jsonGetString(json_buf, "use_modelfile_system", b_buf, sizeof(b_buf))) {
+            cfg_use_modelfile_system = (strcmp(b_buf, "true") == 0 || strcmp(b_buf, "1") == 0);
+        }
     } else {
         Serial.printf("LittleFS: no config.json, using defaults\n");
     }
@@ -1655,6 +1661,7 @@ void setup() {
 
     /* Init LLM client */
     llm.begin(cfg_api_key, cfg_model, cfg_api_base_url);
+    llm.setSkipSystemMessages(cfg_use_modelfile_system);
 
     /* Watchdog - reconfigure to 60s (Arduino already inits WDT at 5s) */
     esp_task_wdt_config_t wdt_cfg = { .timeout_ms = 60000, .idle_core_mask = 0,

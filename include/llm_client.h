@@ -67,6 +67,9 @@ public:
 
     void begin(const char *api_key, const char *model, const char *base_url = nullptr);
 
+    /* Skip role:"system" messages on the wire. For baked-in Modelfile SYSTEM. */
+    void setSkipSystemMessages(bool skip) { m_skipSystemMessages = skip; }
+
     /**
      * Send a chat completion request, optionally with tools.
      *
@@ -92,6 +95,7 @@ private:
     char m_path[64];
     bool m_use_tls;
     char m_error[128];
+    bool m_skipSystemMessages = false;
 
     int buildRequest(char *buf, int buf_len,
                      const LlmMessage *messages, int count,
