@@ -47,6 +47,12 @@ struct LlmMessage {
 /* Result of an LLM call */
 struct LlmResult {
     bool ok;
+    /* True if model emitted tool-call intent as prose/markdown/XML instead of
+     * populating the structured tool_calls field. When true, the content
+     * should NOT be saved to conversation history -- doing so reinforces the
+     * behavior on subsequent turns. The caller should surface an error and
+     * either retry with a corrective system message or fail gracefully. */
+    bool prose_leak_detected;
     char content[LLM_MAX_RESPONSE_LEN];
     int  content_len;
     int  http_status;
@@ -118,5 +124,10 @@ inline LlmMessage llmToolResult(const char *tool_call_id, const char *content) {
 inline LlmMessage llmToolCallMsg(const char *content, const char *tool_calls_json) {
     return {LLM_MSG_TOOL_CALL, "assistant", content, nullptr, tool_calls_json};
 }
+
+/* P01-v2 boot-time sanity check for the prose-tool-call leak detector.
+ * Prints PASS/FAIL for 4 cases (1 captured leak, 1 negative, 1 regression
+ * for v1, 1 documented false-positive edge). Call once early in setup(). */
+void llmSelfTestProseLeak();
 
 #endif /* LLM_CLIENT_H */

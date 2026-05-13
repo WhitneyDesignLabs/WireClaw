@@ -12,6 +12,96 @@ static const char *DEFAULT_HOST = "openrouter.ai";
 static const int   DEFAULT_PORT = 443;
 static const char *DEFAULT_PATH = "/api/v1/chat/completions";
 
+/* Detect when LLM has emitted tool-call intent as prose instead of populating
+ * the structured tool_calls field. High-signal markers only -- no regex.
+ * Designed for ESP32 footprint: ~200 bytes flash, microseconds of runtime. */
+static bool content_has_prose_tool_call(const char *content, int len) {
+    if (!content || len <= 0) return false;
+
+    /* XML markers used by Qwen-Instruct, Hermes, Anthropic-style fine-tunes */
+    static const char *xml_markers[] = {
+        "<tool_call>",
+        "<function_calls>",
+        "<invoke ",
+        "<tool_use>",
+    };
+    for (size_t i = 0; i < sizeof(xml_markers)/sizeof(xml_markers[0]); i++) {
+        const char *m = xml_markers[i];
+        if (memmem(content, len, m, strlen(m))) return true;
+    }
+
+    /* Fenced JSON block followed by tool-call-shaped keys within 200 bytes */
+    const char *fence = (const char *)memmem(content, len, "```json", 7);
+    if (fence) {
+        int remaining = len - (fence - content);
+        int scan = remaining > 200 ? 200 : remaining;
+        if (memmem(fence, scan, "\"name\"", 6) ||
+            memmem(fence, scan, "\"function\"", 10) ||
+            memmem(fence, scan, "\"arguments\"", 11)) {
+            return true;
+        }
+    }
+
+    /* Naked JSON tool call leak: a JSON object containing both "name" and
+     * "parameters" (Anthropic-style) or both "name" and "arguments"
+     * (OpenAI-style) within close proximity. Empirically observed
+     * 2026-05-12 step 5 probe B: the model self-corrected a tool call
+     * by emitting it as JSON in the assistant content field instead of
+     * the structured tool_calls slot. Adjacency requirement (200 bytes)
+     * keeps false-positive rate low against legitimate prose that
+     * happens to mention those words far apart. */
+    const char *name_key = (const char *)memmem(content, len, "\"name\"", 6);
+    if (name_key) {
+        int after = len - (name_key - content);
+        int scan = after > 200 ? 200 : after;
+        if (memmem(name_key, scan, "\"parameters\"", 12) ||
+            memmem(name_key, scan, "\"arguments\"", 11)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/* Public sanity check for the naked-JSON detector. Called once at boot
+ * to validate detector behavior against captured-leak evidence and
+ * known-negative cases. Logs results to Serial. */
+void llmSelfTestProseLeak() {
+    struct Case { const char *label; const char *content; bool expect; };
+    static const Case cases[] = {
+        /* Captured probe-B leak from step 5 (2026-05-12) -- naked JSON */
+        { "naked_json_probe_b",
+          "You need to specify the sensor name. Since you're asking for chip "
+          "temperature, I'll assume it's a pre-registered virtual sensor.\n\n"
+          "{\"name\": \"rule_create\", \"parameters\": {\"condition\":\"always\","
+          "\"interval_seconds\":300,\"on_action\":\"telegram\"}}",
+          true },
+        /* Clean wrap-up text -- known negative */
+        { "clean_wrapup",
+          "I called led_set with r=255, g=0, b=0. The LED is now red.",
+          false },
+        /* Existing fenced-JSON pattern -- regression check for P01-v1 */
+        { "fenced_json_v1",
+          "Here is the call:\n```json\n{\"name\": \"led_set\", \"arguments\": "
+          "{\"r\":255}}\n```",
+          true },
+        /* Pathological edge: explanation containing the literal pattern */
+        { "explanation_edge",
+          "A tool call looks like {\"name\": \"X\", \"parameters\": {...}} "
+          "in the OpenAI schema.",
+          true /* expected to false-positive; documented as known limitation */ },
+    };
+
+    Serial.printf("[P01-v2] sanity check (4 cases):\n");
+    for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
+        bool got = content_has_prose_tool_call(cases[i].content,
+                                               (int)strlen(cases[i].content));
+        const char *verdict = (got == cases[i].expect) ? "PASS" : "FAIL";
+        Serial.printf("[P01-v2]   %s: expect=%d got=%d %s\n",
+                      cases[i].label, cases[i].expect, got, verdict);
+    }
+}
+
 /* ---- JSON helpers ---- */
 
 static int json_escape(char *dst, int dst_len, const char *src) {
@@ -415,6 +505,7 @@ int LlmClient::parseToolCalls(const char *body, int body_len, LlmResult *result)
 
 bool LlmClient::parseResponse(const char *body, int body_len, LlmResult *result) {
     result->ok = false;
+    result->prose_leak_detected = false;
     result->content[0] = '\0';
     result->content_len = 0;
     result->prompt_tokens = 0;
@@ -433,6 +524,21 @@ bool LlmClient::parseResponse(const char *body, int body_len, LlmResult *result)
         memcpy(result->content, content, copy_len);
         result->content[copy_len] = '\0';
         result->content_len = json_unescape(result->content, copy_len);
+    }
+
+    /* Detect prose-leaked tool calls: model emitted tool intent in content
+     * but no structured tool_calls. Saving this to history reinforces the
+     * behavior, so flag it and let the caller decide how to surface. */
+    if (tc_count == 0 && result->content_len > 0) {
+        if (content_has_prose_tool_call(result->content, result->content_len)) {
+            result->prose_leak_detected = true;
+            Serial.println("[LLM] WARNING: prose tool-call leak detected; not saving to history");
+            if (g_debug) {
+                int snip = result->content_len > 200 ? 200 : result->content_len;
+                Serial.printf("[LLM]   leaked content (%d bytes): %.*s...\n",
+                              result->content_len, snip, result->content);
+            }
+        }
     }
 
     /* If we got tool calls, that's a success even without content */
@@ -521,6 +627,7 @@ int LlmClient::readResponse(char *buf, int buf_len) {
 bool LlmClient::chat(const LlmMessage *messages, int count,
                        const char *tools_json, LlmResult *result) {
     result->ok = false;
+    result->prose_leak_detected = false;
     result->content[0] = '\0';
     result->content_len = 0;
     result->http_status = 0;
