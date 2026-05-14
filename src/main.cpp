@@ -57,7 +57,7 @@ static void configDefaults() {
     cfg_wifi_ssid[0] = '\0';
     cfg_wifi_pass[0] = '\0';
     cfg_api_key[0] = '\0';
-    strncpy(cfg_model, "google/gemini-2.5-flash", sizeof(cfg_model));
+    strncpy(cfg_model, "wireclaw-agent:v1", sizeof(cfg_model));
     strncpy(cfg_device_name, "wireclaw", sizeof(cfg_device_name));
     cfg_api_base_url[0] = '\0';
     cfg_nats_host[0] = '\0';
@@ -67,7 +67,7 @@ static void configDefaults() {
     strncpy(cfg_timezone, "UTC0", sizeof(cfg_timezone));
     cfg_max_tokens  = 2048;
     cfg_temperature = 0.7f;
-    cfg_use_modelfile_system = false;
+    cfg_use_modelfile_system = true;
     strncpy(cfg_system_prompt,
         "You are WireClaw, a helpful AI assistant running on an ESP32 microcontroller. "
         "Be concise. Keep responses under 200 words unless asked for detail.",
