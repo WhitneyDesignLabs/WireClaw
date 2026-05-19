@@ -8,6 +8,7 @@
 #include "llm_client.h"
 #include <LittleFS.h>
 #include <nats_esp32.h>
+#include <stdarg.h>
 
 /* Externs from main.cpp */
 extern void led(uint8_t r, uint8_t g, uint8_t b);
@@ -631,21 +632,43 @@ static bool ruleJsonGetBool(const char *json, const char *key, bool default_val)
     return default_val;
 }
 
+/* Overflow-safe append: snprintf returns the would-have-written length,
+ * NOT bytes written. Tracking that unclamped lets `w` exceed the buffer,
+ * after which `buf + w` runs past the end and `cap - w` underflows to a
+ * huge size_t on the next call -> OOB write -> memory corruption ->
+ * SW_CPU panic-reset. Clamp every step so `w` never exceeds cap-1 and
+ * the size arg is always a sane positive value. */
+static void rulesAppend(char *buf, int cap, int &w, const char *fmt, ...) {
+    if (w >= cap - 1) return;                 /* no space — never underflow */
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf + w, cap - w, fmt, ap);
+    va_end(ap);
+    if (n < 0) { buf[w] = '\0'; return; }     /* encoding error */
+    if (n >= cap - w) w = cap - 1;            /* truncated — clamp to end */
+    else w += n;
+}
+
 void rulesSave() {
-    static char buf[4096];
+    /* 16 rules * full field set (~250-400 B each) can exceed 4 KB; size
+     * for the worst case so a full rule set serializes without loss. */
+    static char buf[8192];
+    const int cap = (int)sizeof(buf);
     int w = 0;
 
-    w += snprintf(buf + w, sizeof(buf) - w, "[");
+    rulesAppend(buf, cap, w, "[");
 
     bool first = true;
     for (int i = 0; i < MAX_RULES; i++) {
         if (!g_rules[i].used) continue;
         const Rule *r = &g_rules[i];
 
-        if (!first) w += snprintf(buf + w, sizeof(buf) - w, ",");
+        if (w >= cap - 1) break;              /* guard BEFORE the write */
+
+        if (!first) rulesAppend(buf, cap, w, ",");
         first = false;
 
-        w += snprintf(buf + w, sizeof(buf) - w,
+        rulesAppend(buf, cap, w,
             "{\"id\":\"%s\",\"nm\":\"%s\",\"sn\":\"%s\",\"sp\":%d,\"sa\":%s,"
             "\"co\":\"%s\",\"th\":%d,\"iv\":%u,"
             "\"oa\":\"%s\",\"oac\":\"%s\",\"op\":%d,\"ov\":%d,"
@@ -666,11 +689,9 @@ void rulesSave() {
             r->chain_off_id, (unsigned)r->chain_off_delay_ms,
             r->enabled ? "true" : "false",
             (unsigned)r->last_triggered);
-
-        if (w >= (int)sizeof(buf) - 1) break;
     }
 
-    w += snprintf(buf + w, sizeof(buf) - w, "]");
+    rulesAppend(buf, cap, w, "]");
 
     File f = LittleFS.open("/rules.json", "w");
     if (f) {
@@ -682,7 +703,9 @@ void rulesSave() {
 }
 
 static void rulesLoad() {
-    static char buf[4096];
+    /* Must match rulesSave() capacity or a full (>4 KB) rule set is
+     * truncated on boot and rules are silently dropped. */
+    static char buf[8192];
     File f = LittleFS.open("/rules.json", "r");
     if (!f) return;
 

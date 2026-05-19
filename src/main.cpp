@@ -1234,6 +1234,23 @@ static unsigned long tgWaitStart = 0;
 static const char *TG_HOST = "api.telegram.org";
 static const int   TG_PORT = 443;
 
+/* Persist the last handled Telegram update_id. tgLastUpdateId is
+ * otherwise RAM-only: if the chip crashes while processing a message
+ * (before the next poll acks it with offset+1), a reboot would re-fetch
+ * the SAME message and loop forever. Saved BEFORE processing; loaded at
+ * boot so recovery resumes past the offending update. */
+static void tgSaveOffset() {
+    File f = LittleFS.open("/tg_offset", "w");
+    if (f) { f.print(tgLastUpdateId); f.close(); }
+}
+static void tgLoadOffset() {
+    File f = LittleFS.open("/tg_offset", "r");
+    if (!f) return;
+    long v = f.parseInt();
+    f.close();
+    if (v > tgLastUpdateId) tgLastUpdateId = (int)v;
+}
+
 /**
  * Make an HTTPS request to Telegram Bot API.
  * Writes response body into buf, returns body length or -1 on error.
@@ -1480,6 +1497,9 @@ static void telegramTick() {
         if (g_debug) Serial.printf("[TG] update_id=%d (last=%d)\n", update_id, tgLastUpdateId);
         if (update_id <= tgLastUpdateId) return;
         tgLastUpdateId = update_id;
+        /* Persist BEFORE processing: if the message crashes the chip, the
+         * next boot resumes past it instead of re-fetching it forever. */
+        tgSaveOffset();
 
         /* Extract chat_id from message.chat.id */
         const char *chat_id_str = strstr(resp, "\"chat\"");
@@ -1715,6 +1735,7 @@ void setup() {
     /* Telegram (optional) */
     if (cfg_telegram_token[0] != '\0' && cfg_telegram_chat_id[0] != '\0') {
         g_telegram_enabled = true;
+        tgLoadOffset();          /* resume past last handled update (crash-safe) */
         tgClient.setInsecure();
         tgClient.setTimeout(30); /* seconds - matches LLM client pattern */
         tgLastPoll = millis();   /* delay first poll by one interval */

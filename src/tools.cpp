@@ -86,6 +86,42 @@ static bool jsonArgExists(const char *json, const char *key) {
 }
 
 /*============================================================================
+ * GPIO pin safety guard (ESP32-C6 reserved-pin protection)
+ *
+ * On the ESP32-C6 GPIO24..GPIO30 are the in-package SPI flash bus and
+ * GPIO12/GPIO13 are the USB D-/D+ lines. Driving any of them hard-faults
+ * the chip -> TG1 watchdog -> permanent reboot loop. The previous
+ * `pin < 0 || pin >= SOC_GPIO_PIN_COUNT` bounds check let 24..30 through;
+ * persona prompts say things like "set GPIO 25/26/27" -> that is what
+ * bricked the fleet. Every LLM-driven pin (gpio_write/read, device
+ * register, rule + chain actions/sensors) must pass pinRejected().
+ *============================================================================*/
+static bool gpioPinReserved(int pin) {
+#if defined(CONFIG_IDF_TARGET_ESP32C6)
+    if (pin >= 24 && pin <= 30) return true;   /* in-package SPI flash bus */
+    if (pin == 12 || pin == 13) return true;   /* USB D-/D+ (Serial/JTAG)  */
+#endif
+    return false;
+}
+
+/* Returns true (and fills `result` with a graceful error) if `pin` must
+ * not be used. `what` is a short label for the message, e.g. "gpio_write". */
+static bool pinRejected(int pin, const char *what, char *result, int result_len) {
+    if (pin < 0 || pin >= SOC_GPIO_PIN_COUNT) {
+        snprintf(result, result_len, "Error: %s invalid pin %d (must be 0-%d)",
+                 what, pin, SOC_GPIO_PIN_COUNT - 1);
+        return true;
+    }
+    if (gpioPinReserved(pin)) {
+        snprintf(result, result_len,
+                 "Error: %s GPIO %d is reserved (SPI flash / USB) and cannot be "
+                 "driven. Pick a free GPIO (0-11 or 14-23).", what, pin);
+        return true;
+    }
+    return false;
+}
+
+/*============================================================================
  * Tool Definitions (OpenAI function calling format) - compacted
  *============================================================================*/
 
@@ -136,10 +172,7 @@ static void tool_gpio_write(const char *args, char *result, int result_len) {
     int pin = jsonArgInt(args, "pin", -1);
     int value = jsonArgInt(args, "value", 0);
 
-    if (pin < 0 || pin >= SOC_GPIO_PIN_COUNT) {
-        snprintf(result, result_len, "Error: invalid pin %d (must be 0-%d)", pin, SOC_GPIO_PIN_COUNT - 1);
-        return;
-    }
+    if (pinRejected(pin, "gpio_write", result, result_len)) return;
 
     pinMode(pin, OUTPUT);
     digitalWrite(pin, value ? HIGH : LOW);
@@ -149,10 +182,7 @@ static void tool_gpio_write(const char *args, char *result, int result_len) {
 static void tool_gpio_read(const char *args, char *result, int result_len) {
     int pin = jsonArgInt(args, "pin", -1);
 
-    if (pin < 0 || pin >= SOC_GPIO_PIN_COUNT) {
-        snprintf(result, result_len, "Error: invalid pin %d (must be 0-%d)", pin, SOC_GPIO_PIN_COUNT - 1);
-        return;
-    }
+    if (pinRejected(pin, "gpio_read", result, result_len)) return;
 
     int value = digitalRead(pin);
     snprintf(result, result_len, "GPIO %d = %d (%s)", pin, value,
@@ -303,6 +333,14 @@ static void tool_device_register(const char *args, char *result, int result_len)
     else if (strcmp(type_str, "pwm") == 0)            kind = DEV_ACTUATOR_PWM;
     else {
         snprintf(result, result_len, "Error: unknown type '%s'", type_str);
+        return;
+    }
+
+    /* Reject reserved pins for any physical-pin device kind (nats_value /
+     * serial_text don't use a GPIO; their pin is forced PIN_NONE below). */
+    if (kind != DEV_SENSOR_NATS_VALUE && kind != DEV_SENSOR_SERIAL_TEXT &&
+        pin != PIN_NONE &&
+        pinRejected(pin, "device", result, result_len)) {
         return;
     }
 
@@ -682,6 +720,15 @@ static void tool_rule_create(const char *args, char *result, int result_len) {
     jsonArgString(args, "chain_off_rule", chain_off_rule, sizeof(chain_off_rule));
     uint32_t chain_off_delay_ms = (uint32_t)jsonArgInt(args, "chain_off_delay_seconds", 0) * 1000;
 
+    /* Reject reserved pins before the rule is persisted/evaluated — a
+     * stored bad pin would crash the chip every time the rule fires. */
+    if (!sensor_name[0] && sensor_pin != PIN_NONE && condition != COND_CHAINED &&
+        pinRejected(sensor_pin, "rule sensor", result, result_len)) return;
+    if (on_action == ACT_GPIO_WRITE &&
+        pinRejected(on_pin, "rule on-action", result, result_len)) return;
+    if (has_off && off_action == ACT_GPIO_WRITE &&
+        pinRejected(off_pin, "rule off-action", result, result_len)) return;
+
     const char *id = ruleCreate(rule_name, sensor_name, sensor_pin, sensor_analog,
                                 condition, threshold, interval_ms,
                                 on_action, on_actuator, on_pin, on_value,
@@ -1056,6 +1103,14 @@ static void tool_chain_create(const char *args, char *result, int result_len) {
 
     int num_steps = 0;
     for (int s = 0; s < 5; s++) { if (steps[s].used) num_steps = s + 1; }
+
+    /* Reject reserved pins on any gpio_write step before persisting. */
+    for (int s = 0; s < num_steps; s++) {
+        if (steps[s].used && steps[s].action == ACT_GPIO_WRITE &&
+            pinRejected(steps[s].pin, "chain step", result, result_len)) {
+            return;
+        }
+    }
 
     /* --- Create rules end-first --- */
     const char *ids[5] = {nullptr};
