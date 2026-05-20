@@ -6,6 +6,16 @@ This README covers the fork-specific delta. For the upstream firmware overview, 
 
 ---
 
+## Constitutional Framework
+
+This firmware fork bakes the **Project Opengates Constitution** into the chip's runtime. The bake is `SOUL-CHIP.md` (condensed to fit the 4095-byte chip budget); the canonical full text governs interpretation:
+
+**Canonical:** https://clawhub.ai/souls/opengates-constitution
+
+The fork is one component of [Project Opengates](https://github.com/WhitneyDesignLabs/project-opengates) — the same constitution governs the workspace tooling, the v1.1 LoRA model on HuggingFace, and the chip-baked runtime. Article numbers are consistent across all three derivatives; the canonical URL is authoritative on any interpretive question.
+
+---
+
 ## What this fork adds over upstream
 
 Five firmware-side improvements plus one optional baked model:
